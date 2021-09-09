@@ -1,35 +1,45 @@
 # Overview
 
-This tutorial involves a sample analysis of real gut microbiome data from the MetaHIT cohort (see: [https://www.nature.com/articles/nbt.2939](https://www.nature.com/articles/nbt.2939)). This includes healthy controls as well as people with two different types of inflammatory bowel disease, ulcerative colitis (UC) and Crohn's disease (CD).
+This is a dry-lab exercise for VETPREV/MICRO 7719 where you will analyze some real data. *Don't panic* if you don't understand most of the code! That's not the point. The point is to get some hands-on practice with what real data looks like, and to see how different types of analyses work.
 
-We'll be working with data that has already been mapped to counts of protein families (i.e., sets of orthologs) using the tool [Shotmap](http://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1004573), since this step is really time-consuming and typically requires access to a cluster. We'll also assume that the data have been QC'd and that the tool [MicrobeCensus](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-015-0611-7) has been run on the sequencing data to estimate the number of genome equivalents per sample. We'll be using that to normalize the data.
+However, if you are interested in going deeper, an excellent, free reference for R is [R for Data Science](https://r4ds.had.co.nz/).
 
-First, we'll need to load some packages. Some of them are BioConductor packages and some are from the Comprehensive R Archive Network (CRAN).
+First, if you haven't already, click the gear icon at the top of this pane, which should be next to the button titled "Knit". Then click "Use Visual Editor." This will make interacting with this notebook much easier on the eyes.
 
-```{r setup}
-# Format for installing BioConductor packages:
-#   BiocManager::install("limma")
-# Format for installing CRAN packages:
-#   install.packages("ggplot")
+This tutorial involves a sample analysis of real gut microbiome data from the MetaHIT cohort (see: <https://www.nature.com/articles/nbt.2939>). This includes healthy controls as well as people with two different types of inflammatory bowel disease, ulcerative colitis (UC) and Crohn's disease (CD).
 
-if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
+We'll be working with data that has already been mapped to counts of protein families (i.e., sets of orthologs) using the tool [Shotmap](http://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1004573), since this step is really time-consuming and typically requires access to a cluster. We'll also assume that the data have been QC'd and that the tool [MicrobeCensus](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-015-0611-7) has been run on the sequencing data to estimate the number of genome equivalents per sample. We'll be using that to normalize the data (why?).
 
-# BioConductor
-library(limma)
-library(qvalue)
+We'll first load in some custom helper functions for this exercise. **If this step fails, you probably are not in the right directory. R doesn't know on its own where files are on your computer, so you need to tell it yourself.** You can use the "Files" tab in the bottom-right pane. Once you're in the right directory, click the "More" icon in that pane (with the gear icon) and click "set as working directory."
 
-# CRAN
-library(tidyverse)
-library(umap)
-library(vegan)
-library(rmarkdown)
-library(knitr)
-library(Matrix)
+Then, we'll need to load some packages. Some of them are BioConductor packages and some are from the Comprehensive R Archive Network (CRAN), which is not an important distinction except that they use different commands. We've wrapped those commands in two helper functions (bioconductor_pkg and cran_pkg).
+
+If the install process asks you to update packages, type 'n' (it's not a big deal if you choose otherwise, but it may take a *lot* longer to finish).
+
+**To run a chunk of code**: click the green "play" button in the top-right corner of the code block (by default, a gray block of text in a different font).
+
+```{r packages, message=FALSE, include=FALSE}
+# Here, we're using special helper functions to automatically install missing packages. You can find more about them in helper_functions.R.
 
 # local
 source("helper_functions.R")
 
+# BioConductor
+bioconductor_pkg("limma")
+bioconductor_pkg("qvalue")
+
+# CRAN
+cran_pkg("tidyverse")
+cran_pkg("umap")
+cran_pkg("vegan")
+cran_pkg("rmarkdown")
+cran_pkg("knitr")
+cran_pkg("Matrix")
+```
+
+Next, we'll load in some databases that we need using read_csv. A csv is a *c*omma *s*eparated *v*alue file. This is a common way of distributing spreadsheets or tables that any program should be able to read.
+
+```{r load_data, message=FALSE}
 # These are samples mapped to the KEGG Orthology, so we read in some files to
 # map KOs to pathways and modules, etc.
 
@@ -50,21 +60,30 @@ ko_descs <- read_csv("data/orthology.csv",
                      col_names=c("KO", "description"))
 ```
 
+Take a look at what these databases contain by double-clicking on them in the "Environment" tab of the top-right pane (mod_descs and ko_descs might be the most interesting).
+
 # Reading in and normalizing data
 
-The first step is to read in the raw count matrix. This matrix should have rows corresponding to the protein families we're using (here, the [KEGG Orthology](http://www.genome.jp/kegg/ko.html)), and columns corresponding to samples. We also want to read the metadata, which links samples to individuals and to attributes like health status.
+The first step is to read in the *raw count matrix*. This matrix should have rows corresponding to the protein families we're using (here, the [KEGG Orthology](http://www.genome.jp/kegg/ko.html)), and columns corresponding to samples.
 
-After doing this, we want to normalize these raw counts. There are many ways of doing this, but what we'll focus on is converting the counts to RPKG: **R**eads **P**er **K**ilobase of **G**enome Equivalents. We do this because the average genome size can otherwise confound our results (see [Beszteri et al.](https://www.nature.com/articles/ismej201029) for details).
+We also want to read the metadata, which links samples to individuals and to attributes like health status.
 
-For some downstream analyses, we also need to look at log-RPKG. Some values in the RPKG table will be zero, so we need to add a small pseudocount.
+To use the data, we will convert them to something called "tidy" format. Basically, this means that instead of having rows be protein families and columns be samples, each row will have three columns: the protein family, the name of the sample, and the number of counts. Many R packages assume that your data are in this format. This way of storing the data takes up more memory, but it makes it easy to collect the data and metadata together.
+
+After doing this, we want to normalize these raw counts. There are many ways of doing this, but what we'll focus on is converting the counts to RPKG: **R**eads **P**er **K**ilobase of **G**enome Equivalents. We do this because 1. when genomes are bigger on average, reads will be "diluted" across more of the genomes, and 2. when genes are bigger on average, more reads will tend to hit that gene. So, we'll need to divide the counts both by the estimated number of genomes and the estimated gene-length for each protein family. This helps to keep different samples comparable to one another (see [Beszteri et al.](https://www.nature.com/articles/ismej201029) for details).
+
+For some downstream analyses, we also need to look at log-RPKG. Some values in the RPKG table will be zero, so we need to add a small pseudocount before taking the log.
+
+(What would be another approach besides taking the log?)
 
 ```{r read_in_data}
 mgs_reads_table <- read_tsv("data/mgs-reads-table.tab")
-kable(right_join(ko_descs, mgs_reads_table[1:5, 1:6], by="KO"))
+kable(right_join(ko_descs, mgs_reads_table[1:5, 1:6], by="KO"),
+      caption="Raw reads table")
 
 # We can turn these into "tidy" data as follows:
 tidy_mgs <- gather(mgs_reads_table, key="Sample.Name", value="reads", -KO)
-kable(head(tidy_mgs))
+kable(head(tidy_mgs), caption="Tidy reads table")
 
 all_afls <- read_csv("data/all-afls.csv",
                      col_names=c("KO", "AFL"),
@@ -86,15 +105,22 @@ mgs_metadata <- mutate(mgs_metadata,
                          Avg.Genome.Size)
 
 # Normalization
-# Note, AFLs are PROTEIN lengths: need to multiply by 3 to estimate size
+# Note, AFLs are PROTEIN lengths so we need to multiply by 3 to estimate size
 
 tidy_joined_mgs <- left_join(tidy_mgs, all_afls) %>%
   left_join(., select(mgs_metadata, Sample.Name, genome.eqs)) %>%
   mutate(gene.length.kb = AFL * 3 / 1000)
+```
 
+Now **fill in the blank** (the string "???") in this command with a formula for RPKG. Remember its definition above. The relevant variables are called `reads` (counts), `gene.length.kb` (gene length in kilobases), and `genome.eqs` (genome equivalents). `*`, `/`, `+`, and `-` do multiplication, division, addition, and subtraction exactly as you might expect; you can also use parentheses if necessary `()`.
+
+After you fill in the blank, run this chunk.
+
+```{r RPKG}
 tidy_normed_mgs <- mutate(tidy_joined_mgs,
-                          RPKG = "????????????" %>%
+                          RPKG = "???" %>%
   select(KO, Sample.Name, RPKG)
+kable(head(tidy_normed_mgs))
 
 tbl_normed_mgs <- spread(tidy_normed_mgs,
                          key="Sample.Name",
@@ -109,60 +135,13 @@ mgs_pseudo <- min_nonzero(mtx_normed_mgs) / 2
 mgs_log_rpkg <- log2(mtx_normed_mgs + mgs_pseudo)
 ```
 
-# Ordination
+# $\alpha$-Diversity
 
-Ordination is the process of visualizing overall trends in the data by projecting our super-high-dimensional data down to some lower-dimensional space. There are lots of ordination methods, so we'll run through a few different ones:
+Two conditions may differ in terms of the diversity of gene families represented. Diversity can be measured in multiple different ways. Richness is simply the number of gene families detected. (Note that to be a completely fair comparison we need to take into account the total number of reads per sample. Capping them at all the same levels is one way to do that, which is called "rarefaction.") Shannon entropy also takes into account abundance of gene families, so metagenomes dominated by just a few abundant functions will have low entropy and ones that have lots of equally-abundant genes will have high entropy. Different metrics do not always give you the same results.
 
-  - **PCA**. Principal Components Analysis (PCA) is the "original" ordination technique. It finds a new set of orthogonal dimensions that capture the most variance in your data. It assumes that your data are multivariate normal.
-  - **PCoA**. While PCA works on the data, Principal Co-ordinates Analysis (PCoA) works on a *dissimilarity matrix*. (If you use Euclidean distance, it reduces back to PCA.) This makes it more flexible than PCA.
-		  - In ecology, when visualizing species-tables, it is common to use measures of *$\beta$-diversity*, like Bray-Curtis (kind of a continuous version of the Jaccard index). We can also use Bray-Curtis for gene abundances.
-  - **NMDS**. Non-metric Multidimensional Scaling (NMDS) is different than the first two. It's a dimension reduction technique that tries to give you a low-dimensional representation in which distances between points are preserved. Unlike PCA or PCoA, if you ask for two dimensions, NMDS will actually optimize this representation for two dimensions: you don't have to worry that the first two dimensions don't contain the signal you're interested in. However, NMDS is slower, and you can't reconstruct the original data from its representation in the new space.
-  - **UMAP**. Uniform Manifold Approximation and Projection for Dimension Reduction. You can find more about UMAP [here](https://umap-learn.readthedocs.io). Like NMDS, UMAP is also a dimension reduction technique, which in practice is almost always used to plot data in two dimensions. However, UMAP doesn't try to represent the entire distance matrix faithfully: instead, it focuses on trying to be faithful to the "neighborhood" of points around each point. In addition to the number of dimensions, the other knob you can turn (in stats speak, the "free parameter") is how many points are in each neighborhood.
+First, let's look at Shannon entropy.
 
-NMDS relies on optimization, so you probably want to pay attention to whether they converged. PCA and PCoA have exact solutions, so this isn't a problem, but you may want to check how much variance each dimension explains. Very big numbers (e.g. 80\%) and very small numbers (e.g. 5\%) can be red flags that there are batch effects or low signal, respectively. For PCA and PCoA you always get back as many dimensions as the number of samples or the number of genes, whichever is smaller -- for NMDS and t-SNE you can specify the number of dimensions you want to optimize for. PCA and PCoA are very common in microbial ecology, with NMDS a little less common. UMAP is most common in the analysis of single-cell RNA-seq data.
-
-```{r ordination}
-# There are lots of methods for ordination that we can apply to shotgun metagenomics data.
-
-# For this part, we'll be using either the log-RPKG matrix (mgs_log_rpkg) or the
-# read count matrix (mtx_reads_mgs). Fill in the blanks as appropriate.
-
-# PCA, Euclidean distance
-mgs_rda <- rda(X="?????????" %>% t)
-ord_plot_wrapper(mgs_rda, mgs_metadata$health_state, title="PCA")
-
-# PCoA, Bray-Curtis distance
-mgs_pcoa <- capscale(t("???????") ~ 1, distance = "bray")
-# Plot these.
-"??????????????"
-
-# NMDS: non-metric multidimensional scaling
-# WARNING: If you choose wrong, R may crash -- check with me before running this.
-# mgs_nmds <- metaMDS(mtx_reads_mgs %>% t, distance = "bray")
-# Plot these. What does this output mean?
-"??????????????"
-
-# Try different distance metrics if you like.
-
-# Try playing with different numbers of neighbors.
-mgs_umap <- umap(mtx_reads_mgs %>% t, neighbors = 20)
-mgs_palette = palette()[c(3, 2, 4)]
-mgs_colors = mgs_palette[mgs.metadata$health_state]
-plot(mgs_umap[, 1], mgs_umap[, 2], col = mgs_colors,
-  bg = mgs_colors, pch = 21, main = "t-SNE")
-ordiellipse(mgs_umap, mgs_metadata$health_state, col = mgs_palette,
-  lwd = 3, draw = "polygon", label = TRUE)
-
-```
-
-# Diversity
-
-Conditions may also differ in terms of the diversity of gene families represented. Diversity can be measured in multiple different ways. Richness is simply the number of gene families detected. (Note that to be a completely fair comparison we need to take into account the total number of reads per sample, since that will tend to affect richness.) Shannon entropy also takes into account abundance of gene families, so metagenomes dominated by just a few abundant functions will have low entropy and ones that have lots of equally-abundant genes will have high entropy. Different metrics do not always give you the same results:
-
-```{r diversity}
-# Let's look at two alpha-diversity metrics, Shannon entropy and richness
-# They give different results - why might that be?
-
+```{r shannon_diversity}
 mgs_shannon <- diversity(mtx_reads_mgs %>% t) %>%
   enframe(name="Sample.Name", value="shannon_entropy")
 mgs_shannon_compare <- left_join(mgs_shannon,
@@ -171,22 +150,101 @@ ggplot(mgs_shannon_compare,
        aes(x = health_state, y = shannon_entropy)) +
   geom_boxplot()
 
+```
+
+Now try plotting richness by **filling in the blank** (?????). Start by copying the ggplot command from above, then change it as appropriate.
+
+```{r richness_diversity}
 mgs_richness <- colSums(mtx_reads_mgs > 0) %>%
   enframe(name="Sample.Name", value="richness_estimate")
 
 # Go ahead and try plotting these also.
-"????????????????"
+# ?????
+```
+
+Did these give you the same results? Why do you think that might be?
+
+# Ordination / $\beta$-diversity
+
+Ordination is the process of visualizing overall trends in the data by projecting our super-high-dimensional data down to some lower-dimensional space. There are lots of ordination methods, but here are the ones you're most likely to encounter:
+
+-   **PCA**. Principal Components Analysis (PCA) is the "original" ordination technique. It finds a new set of orthogonal (i.e., perpendicular) dimensions that capture the most variance in your data. It assumes that your data are multivariate normal, though it may still "work" on non-normal data.
+-   **PCoA**. While PCA works on the data, Principal Co-ordinates Analysis (PCoA) works on a *dissimilarity matrix*. This makes it more flexible than PCA. (If you use Euclidean distance, it is the same thing as PCA.) - In ecology, when visualizing species-tables, it is common to use measures of $\beta$-diversity, like Bray-Curtis dissimilarity (which looks at the ratio of species in common **between** two sites to total species measured **across** two sites). We can also use Bray-Curtis for gene abundances.
+-   **NMDS**. Non-metric Multidimensional Scaling (NMDS) is different than the first two. It's a dimension reduction technique that tries to give you a low-dimensional representation in which distances between points are preserved. Unlike PCA or PCoA, if you ask for two dimensions, NMDS will actually optimize this representation for two dimensions: you don't have to worry that the first two dimensions don't contain the signal you're interested in. However, NMDS is slower, and you can't reconstruct the original data from its representation in the new space.
+-   **UMAP**. Uniform Manifold Approximation and Projection for Dimension Reduction. You can find more about UMAP [here](https://umap-learn.readthedocs.io). Like NMDS, UMAP is also a dimension reduction technique, which in practice is almost always used to plot data in two dimensions. However, UMAP doesn't try to represent the entire distance matrix faithfully: instead, it focuses on trying to be faithful to the "neighborhood" of points around each point. In addition to the number of dimensions, the other knob you can turn (in stats speak, the "free parameter") is how many points are in each neighborhood.
+
+A few additional notes:
+
+-   NMDS relies on optimization, so you probably want to pay attention to whether it converged.
+
+-   PCA and PCoA have exact solutions, so convergence isn't a problem. But you may want to check how much variance each dimension explains. Very big numbers (e.g. 80%) and very small numbers (e.g. 5%) can be red flags that there are batch effects or low signal, respectively.
+
+-   For PCA and PCoA you always get back as many dimensions as the number of samples or the number of genes, whichever is smaller -- for NMDS and UMAP you can specify the number of dimensions you want to optimize for (almost always 2 or maybe 3 for visualization).
+
+-   PCA and PCoA are very common in microbial ecology, with NMDS somewhat less common. UMAP is most common not in metagenomics but in the analysis of single-cell RNA-seq data (as is another related method called t-SNE).
+
+```{r pca}
+# There are lots of methods for ordination that we can apply to shotgun metagenomics data.
+
+# For this part, we'll be using either the log-RPKG matrix (mgs_log_rpkg) or the
+# read count matrix (mtx_reads_mgs). Fill in the blanks as appropriate.
+
+# PCA, Euclidean distance
+mgs_rda <- rda(X=mgs_log_rpkg %>% t)
+ord_plot_wrapper(mgs_rda, mgs_metadata$health_state, title="PCA")
+```
+
+Now **fill in the blanks**. In the first blank, either put in the log-RPKG matrix (mgs_log_rpkg) or the read count matrix (mtx_reads_mgs). In the second blank, copy the ord_plot_wrapper command above, but change it to show the PCoA results.
+
+```{r pcoa}
+# PCoA, Bray-Curtis distance
+mgs_pcoa <- capscale(t("???") ~ 1, distance = "bray")
+# Plot these.
+# ???
+```
+
+Do the same for NMDS. Here there's only one blank, the plotting command.
+
+You can try different distance metrics instead of "bray" if you like. To find out what metrics are possible, enter ?metaMDS at the R console. This leads you to a command called "vegdist", which you can find out about by entering ?vegdist.
+
+```{r nmds}
+# NMDS: non-metric multidimensional scaling
+mgs_nmds <- metaMDS(mtx_reads_mgs %>% t, distance = "bray")
+# Plot these. What does this output mean?
+# ???
+```
+
+Here are the UMAP results. Try different numbers of neighbors to see how that affects the plot.
+
+```{r umap}
+# Try playing with different numbers of neighbors.
+mgs_umap <- umap(mgs_log_rpkg %>% t, neighbors = 25)
+mgs_palette = palette()[c(3, 2, 4)]
+mgs_colors = mgs_palette[mgs_metadata$health_state]
+plot(mgs_umap$layout[, 1], mgs_umap$layout[, 2], col = mgs_colors,
+     bg = mgs_colors, pch = 21,
+     main = "UMAP",
+     xlab = "UMAP 1",
+     ylab = "UMAP 2")
+ordiellipse(mgs_umap$layout, mgs_metadata$health_state,
+            col = mgs_palette,
+            lwd = 3, draw = "polygon", label = TRUE)
+
 ```
 
 # Differential abundance
 
 One reason to collect shotgun metagenomics data is to know which *genes* (and not only which species) differ between, for example, health and disease states. There are many ways to assess this.
 
-Shotgun sequencing data, like 16S data, are technically compositional (i.e., you collect an arbitrary number of reads per sample, and that number doesn't mean anything about the system you're studying). So, some people use explicitly compositional methods, like ALDEx2. This method involves applying the clr-transform to the data, i.e., for each sample, taking the log-ratio of each gene to the geometric mean of all genes. (Note: is log-RPKG a compositional measurement? Why/why not? Hint: compare the clr-transform to RPKG normalization.)
+Shotgun sequencing data, like 16S data, are technically compositional (i.e., you collect an arbitrary number of reads per sample, and that number doesn't mean anything about the system you're studying). So, some people use explicitly compositional methods, like ALDEx2 or ANCOM. This method involves applying the clr-transform to the data, i.e., for each sample, taking the log-ratio of each gene to the geometric mean of all genes. People tend to use this type of approach *especially* for taxonomic data.
 
-Another problem is that the mean and the variance of shotgun sequencing data are correlated. This means that if you try to apply a standard method like the $t$-test, you can end up with inaccurate results due to heteroskedasticity. Finally, often sample size is not very high for this type of data, making it hard to estimate exactly what the variance really is. RNA-seq methods like *edgeR*, *DESeq*, and *voom/limma* attempt to correct for these problems. 
+(Note: is log-RPKG a compositional measurement? Why/why not? Hint: compare the clr-transform to the log of the RPKG formula.)
 
-Here, we'll be using *voom/limma* to test for significance:
+Another problem is that the mean and the variance of shotgun sequencing data are correlated. This means that if you try to apply a standard method like the $t$-test, you can end up with inaccurate results, because those methods assume there is just one variance for all your data. (The technical term for this is "heteroskedasticity.")
+
+Finally, often sample size is not very high for this type of data. This means that our estimates can be really noisy. Some methods will therefore "smooth" them out (the technical term for this is "shrinkage" because it "shrinks" the estimates back to some value).
+
+RNA-seq methods like *edgeR*, *DESeq*, and *voom/limma* attempt to correct for these problems. Here, we'll be using *voom/limma* to test for significance, but this is just ONE WAY of getting significance; there are many others with different positives and negatives! *limma* provides a classic "smoothed" variant of the $t$-test for genomic data, which has been used for almost 15 years. *voom* is an add-on to limma that is meant for count data: it takes care of the mean-variance relationship by just fitting a curve to it.
 
 ```{r differential}
 # We need to make a model matrix. Here, we are modeling abundance as a function
@@ -223,6 +281,11 @@ ggplot(fit_pvals_long,
        aes(x = health_status, y = p_value)) +
   geom_violin(scale = "width")
 
+```
+
+We've now just done thousands of individual hypothesis tests. If we just use a p \< 0.05 cutoff, this will produce lots and lots of false discoveries (the "green M&Ms problem"). We will therefore convert these p-values to q-values, which represent the *false discovery rate* (FDR).
+
+```{r qvals}
 # Here, we're converting p-values into q-values, but doing it one group at a
 # time. This is a very typical workflow in tidyverse: first group by one
 # variable, then nest (take a look at what happens if you just go up to this
@@ -246,21 +309,24 @@ qval_summary <- fit_qvals_long %>%
   summarize(significant = sum(q_value <= 0.05))
 
 kable(qval_summary)
-
 ```
 
 # Enrichment
 
-Now that we have some significant hits, how do we interpret them? If there are too many to look at individually, one answer is to do enrichment analysis. This involves taking predefined sets of genes that all work in some pathway (e.g., glycolysis) and determining whether our genes are over-represented in this set. The simplest method is to simply make a 2x2 contingency table and apply a Fisher's test (like a chi-squared test).
+Now that we have some significant hits, how do we interpret them? If there are too many genes to look at individually, one answer is to do enrichment analysis. This involves taking predefined sets of genes that all work in some pathway (e.g., glycolysis) and determining whether our genes are over-represented in this set. The simplest method is to simply make a 2x2 contingency table and apply a Fisher's test (like a chi-squared test).
 
 Let's say we tested 5,000 genes. Our top results (FDR 5%) totaled 500 genes, and we're testing a gene set with 10 genes, 5 of which were in our top results. We'd then construct the following table:
 
-|                                 |In gene set|Not in gene set|
-|--------------------------------:|:---------:|:-------------:|
-|               In our top results|     5     |      495      |
-|Tested but not in our top results|     5     |      4595     |
+|                                   | In gene set | Not in gene set |
+|----------------------------------:|:-----------:|:---------------:|
+|                In our top results |      5      |       495       |
+| Tested but not in our top results |      5      |      4595       |
 
 The result would have a p-value equal to `r fisher.test(matrix(nr = 2, nc = 2, byrow = TRUE, c(5, 495, 5, 4595)))$p.value`. (We use 2-sided p-values here because while we only care about enrichment, 2-sided p-values are easier to convert into false discovery rates than 1-sided.)
+
+HUMAnN is a different commonly-used approach to summarize genes into pathways. Instead of testing for significant enrichment, it uses an algorithm called MinPath to find the minimum number of pathways that explain the genes detected. Then it estimates a fancy average for the genes in each pathway.
+
+**Fill in the blank below** to extract just the genes that are significant in Crohn's disease at a q-value of 0.05 (5% FDR):
 
 ```{r enrichment}
 
@@ -280,38 +346,47 @@ kable(annotate_enr(cd_enr_pw$enr, pw_descs))
 kable(annotate_enr(cd_enr_mod$enr, mod_descs))
 
 # What happens if you vary the cutoff? What about the gene level cutoff?
-
 ```
 
 # Pangenome analysis
 
-Right now, we're analyzing metagenomes as a "bag of genes": that is, we don't care which species a given gene came from. But we can also try to resolve these data into individual strains. This is only possible when we have good read depth and some type of genome reference, but it also potentially gives us more information. By looking at strain-specific SNPs, for instance, we can get a much better idea as to whether two people were colonized by the same bug.
+Right now, we're analyzing metagenomes as a "bag of genes": that is, we don't care which species a given gene came from. But we can also try to resolve these data into individual strains. This is only possible when we have good read depth and some type of genome reference, but it also potentially gives us more information. By looking at strain-specific SNPs, for instance, we can get a much better idea as to whether two people were colonized by the same bug. We'll be talking about this more next week.
 
-Another thing we can do is to look at genes in the pangenome. Prokaryotes tend to have very large "accessory genomes": these are genes that have been detected in at least one representative of the species. For *E. coli*, the pangenome is almost four times bigger than a typical *E. coli* isolate genome, and around two-thirds of any given genome may be accessory genes (as opposed to "core" genes, those found in all representatives sequenced). Genes in the accessory genome tend to be horizontally transferred (though gene duplication also plays a role), while genes in the core genome are mostly inherited vertically. What all this means is that the repertoire of functions in one patient's strain of *E. coli* may be very different from another's. (One of the most extreme examples of this is commensal *E. coli* vs. enterohemorrhagic *E. coli*. Recent evidence also suggests that the pathogen *Shigella* is really a set of *E. coli* strains that have extra virulence genes.)
+Another thing we can do is to look at genes in the *pangenome*. Prokaryotes tend to have very large "accessory genomes": these are genes that have been detected in at least one representative of the species. For *E. coli*, the pangenome is almost four times bigger than a typical *E. coli* isolate genome, and around two-thirds of any given genome may be accessory genes (as opposed to "core" genes, those found in all representatives sequenced). Genes in the accessory genome tend to be horizontally transferred (though gene duplication also plays a role), while genes in the core genome are mostly inherited vertically.
+
+What all this means is that the repertoire of functions in one patient's strain of *E. coli* may be very different from another's. (One of the most extreme examples of this is commensal *E. coli* vs. enterohemorrhagic *E. coli*. Recent evidence also suggests that the pathogen *Shigella* is really a type of *E. coli* with extra virulence genes.)
 
 There are a lot of things you can do with this type of data, but for now, let's just load some presence/absence data for *B. vulgatus* and plot it.
 
 ```{r presabs}
 
-# This is big! We'll use a sparse matrix representation.
+# This is really big, so we'll use a "sparse" (compressed) matrix representation.
 bvu_presabs <- read_tsv("data/bvulgatus_midas/57955.presabs")
 kable(bvu_presabs[1:10, 1:10])
 bvu_sparse_mtx <- Matrix(bvu_presabs %>% as_data_matrix)
+```
 
+Now **fill in the blanks** to make an ordination plot for our *B. vulgatus* matrix. Scroll up to where we were making PCA plots above.
+
+```{r presabs_plot}
 # How many clusters do you see here?
 # Fill in the blank here:
 bvu_rda <- "??????????????"
 plot(bvu_rda, display="sites", type="n")
 points(bvu_rda, display="sites", pch=19, col="#00000022")
+```
 
+Bonus, for people with prior R experience! Let's see if there is any trend in these data by study ID (study_id in the metadata) or continent. **Fill in the blanks** with a ggplot command.
+
+```{r bonus_plot}
 bvu_metadata <- read_csv("data/bvulgatus_midas/subject_phenos.csv",
                          col_types="cccccccd")
 
-# Let's take a look at the pca loadings
+# Let's take a look at the PCA or PCoA loadings
 bvu_loadings <- bvu_rda$CA$u %>% as_tibble(rownames="run_accession")
 bvu_merged <- inner_join(bvu_metadata, bvu_loadings)
 
-# Now, use ggplot to see if there is any trend by study_id, continent. Hint: you will need to use geom_point(). A good way to tell points apart is by coloring them. Take a look at the documentation of how to make a scatter plot in ggplot...
+# Hint: you will need to use geom_point(). A good way to tell points apart is by coloring them. Take a look at the documentation of how to make a scatter plot in ggplot...
 "?????????????"
 
 ```

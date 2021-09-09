@@ -1,5 +1,24 @@
 ### Helper functions
 
+bioconductor_pkg <- function(p) {
+  if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+  r <- require(p, character.only=TRUE)
+  if (!r) {
+    BiocManager::install(p)
+    r <- require(p)
+  }
+  r
+}
+
+cran_pkg <- function(p) {
+  r <- require(p, character.only=TRUE)
+  if (!r) {
+    install.packages(p)
+    r <- require(p)
+  }
+  r
+}
 
 min_nonzero <- function(x) min(x[x > 0])
 
