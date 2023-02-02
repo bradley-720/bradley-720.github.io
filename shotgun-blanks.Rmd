@@ -82,7 +82,11 @@ kable(right_join(ko_descs, mgs_reads_table[1:5, 1:6], by="KO"),
       caption="Raw reads table")
 
 # We can turn these into "tidy" data as follows:
-tidy_mgs <- gather(mgs_reads_table, key="Sample.Name", value="reads", -KO)
+tidy_mgs <- pivot_longer(mgs_reads_table,
+                         cols = -KO,
+                         values_to = "reads",
+                         names_to = "Sample.Name")
+
 kable(head(tidy_mgs), caption="Tidy reads table")
 
 all_afls <- read_csv("data/all-afls.csv",
@@ -92,8 +96,8 @@ all_afls <- read_csv("data/all-afls.csv",
 # reading metadata; we also reorder the factor levels here so that "healthy" is
 # the first one (we'll see why later)
 
-mgs_metadata <- read_delim("data/MGS/Metadata-Diversity.tab",
-                           delim=" ")
+mgs_metadata <- read_tsv("data/MGS/Metadata-Diversity.tab")
+
 mgs_metadata$health_state <- factor(mgs_metadata$health_state,
                                     c("healthy",
                                       "crohns_disease",
@@ -118,19 +122,18 @@ After you fill in the blank, run this chunk.
 
 ```{r RPKG}
 tidy_normed_mgs <- mutate(tidy_joined_mgs,
-                          RPKG = "???" %>%
+                          RPKG = ((reads / gene.length.kb) / genome.eqs))  %>%
   select(KO, Sample.Name, RPKG)
 kable(head(tidy_normed_mgs))
 
-tbl_normed_mgs <- spread(tidy_normed_mgs,
-                         key="Sample.Name",
-                         value="RPKG")
-
-# We'll need these later: transform back from long to matrix format
+# Now let's make this back into "wide" data...
+tbl_normed_mgs <- pivot_wider(tidy_normed_mgs,
+                              names_from="Sample.Name",
+                              values_from="RPKG")
 mtx_normed_mgs <- as_data_matrix(tbl_normed_mgs)
 mtx_reads_mgs <- as_data_matrix(mgs_reads_table)
 
-# log-transforming after pseudocount
+# log-transforming after pseudocount (what is this doing?)
 mgs_pseudo <- min_nonzero(mtx_normed_mgs) / 2
 mgs_log_rpkg <- log2(mtx_normed_mgs + mgs_pseudo)
 ```
@@ -246,6 +249,7 @@ Finally, often sample size is not very high for this type of data. This means th
 
 RNA-seq methods like *edgeR*, *DESeq*, and *voom/limma* attempt to correct for these problems. Here, we'll be using *voom/limma* to test for significance, but this is just ONE WAY of getting significance; there are many others with different positives and negatives! *limma* provides a classic "smoothed" variant of the $t$-test for genomic data, which has been used for almost 15 years. *voom* is an add-on to limma that is meant for count data: it takes care of the mean-variance relationship by just fitting a curve to it.
 
+
 ```{r differential}
 # We need to make a model matrix. Here, we are modeling abundance as a function
 # of health state
@@ -259,8 +263,8 @@ kable(head(mgs_mm))
 
 # The mean-variance relationship may be complex, so we may need to adjust the span:
 
-mgs_vooma <- vooma(mgs_log_rpkg, design = mgs_mm, plot = TRUE)
-mgs_vooma <- vooma(mgs_log_rpkg, design = mgs_mm, plot = TRUE, span = 0.1)
+mgs_vooma <- limma::vooma(mgs_log_rpkg, design = mgs_mm, plot = TRUE)
+mgs_vooma <- limma::vooma(mgs_log_rpkg, design = mgs_mm, plot = TRUE, span = 0.1)
 
 # Actually perform the fit (eBayes does empirical Bayes smoothing)
 
@@ -389,4 +393,22 @@ bvu_merged <- inner_join(bvu_metadata, bvu_loadings)
 # Hint: you will need to use geom_point(). A good way to tell points apart is by coloring them. Take a look at the documentation of how to make a scatter plot in ggplot...
 "?????????????"
 
+```
+
+
+*ON YOUR OWN TIME*: Try installing the ALDEx2 package from Bioconductor and see if you can get results. Are they the same? Different? How do they differ, if so? Note that this will take a LOT longer to run!
+
+```{r ALDEx2}
+
+# ALDEx2 uses reads in a matrix format, instead of a tbl format.
+mgs_reads_matrix <- as_data_matrix(mgs_reads_table)
+
+# We need to make a "model matrix" since we are comparing more than 2 conditions (healthy, UC, CD). This "model matrix" tells us which columns in our data correspond to which conditions. We need to feed the model.matrix function a character vector (or factor) that tells us which column is which, so first we have to make sure it's in the same order as our data. We do this by doing a left_join (there are also other ways!).
+mgs_metadata_joined <- left_join(tibble(Sample.Name=colnames(mgs_reads_matrix)), mgs_metadata)
+mgs_conditions <- select(mgs_metadata_joined, health_state)
+mgs_mm <- model.matrix(mgs_conditions, ~ health_state)
+
+# Now look at the help for these functions, figure out what they need, and run them (warning, very time consuming! May make your computer run for a long time. Maybe try it overnight/plugged in...)
+mgs_aldex2_clr <- ALDEx2::aldex.clr("???????")
+mgs_aldex2_glm <- ALDEx2::aldex.glm("???????")
 ```
